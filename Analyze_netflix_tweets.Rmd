@@ -1,0 +1,293 @@
+---
+title: "Analysis of Tweets about Netflix"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+In this project I analyze a dataset of tweets on netflix. For an explanation of results, please see the presentation.
+
+# Load required libraries
+
+```{r, message=F, warning=F}
+library(tm)
+library(wordcloud)
+library(RWeka)
+library(caret)
+```
+
+# Settings
+
+```{r}
+max_nr_Documents = 3000
+ngram_min = 2
+ngram_max = 4
+sparsity = 0.99 # for around 168 words
+ngram_sparsity = 0.998 #  0.995 old default setting
+# 0.98 for around 273 words # 0.99 for around 500 words at 1000 documents
+# 0.95 for around 15 words # 0.9 for around 10 words
+reduce_memory_usage = TRUE # FALSE # TRUE
+max_wc_words = 200
+min_freq = 1
+test_nr_Documents = 50
+ignore_retweets <- TRUE
+```
+
+# Function Definitions
+
+## Functions to load and prepare Text
+```{r}
+
+get_labels <- function(text) {
+  return(
+    as.integer(
+      as.factor(substr(text, 0, 10))
+    ) - 1 )
+}
+
+remove_labels <- function(text) {
+  return(substring(text, 11))
+}
+
+retweets <- function(tweets) grepl("(RT|via)((?:\\b\\W*@\\w+)+)", tweets, ignore.case=TRUE)
+
+text_csv <- read.csv(file.choose())
+text_orig = text_csv$text
+
+# text_orig <- readLines(file.choose())
+
+if (ignore_retweets) {
+  is_retweet <- retweets(text_orig)
+  text <- head(text_orig[!is_retweet], max_nr_Documents)
+} else {
+  
+  text <- head(text_orig, max_nr_Documents)
+}
+  
+  # get class labels
+
+remove_url <- function(text) gsub("http[[:alnum:][:punct:]]*", "", text) 
+
+# text_labels <- get_labels(text)
+# if (reduce_memory_usage) rm(text_orig)
+```
+
+## Functions to prepare and transform the Text Corpus
+
+```{r}
+
+toSpace <- content_transformer(function (x , pattern) gsub(pattern, " ", x))
+
+transform_reviews <- function(reviews) {
+  
+  # reviews <- remove_url(reviews)
+  # removing special characters and punctuation
+  reviews <- tm_map(reviews, toSpace, "/")
+  reviews <- tm_map(reviews, toSpace, "@")
+  reviews <- tm_map(reviews, toSpace, "\\|")
+  reviews <- tm_map(reviews, removePunctuation)
+  
+  reviews <- tm_map(reviews, content_transformer(tolower)) # Converting reviews to lower case
+  
+  # removing sentiment labels
+  reviews <- tm_map(reviews, removeWords, c("__label__2", "__label__1", "netflix")) 
+  
+  reviews <- tm_map(reviews, removeNumbers)
+
+  reviews <- tm_map(reviews, removeWords, stopwords("english"))
+
+  reviews <- tm_map(reviews, stripWhitespace)# remove double whitespaces
+  
+  # remove labels again, just to be sure
+  reviews <- tm_map(reviews, removeWords, c("__label__2", "__label__1", "netflix")) 
+
+  # Stem text, if necessary (currently not relevant)
+  # reviews <- tm_map(reviews, stemDocument)
+
+  return(reviews)
+}
+
+prepare_reviews <- function(text_data) {
+  return(transform_reviews(VCorpus(VectorSource(remove_url(text_data)))))
+}
+
+```
+
+## Functions for the Term-Document-Matrix
+
+```{r}
+
+tdm_to_dataframe <- function(term_doc_mat) {
+  mat <- as.matrix(term_doc_mat)
+  sorted_rowsums <- sort(rowSums(mat),decreasing=TRUE)
+  df <- data.frame(word = names(sorted_rowsums),freq=sorted_rowsums)
+  return(df)
+}
+
+create_barplot <- function(term_doc_mat, nr_words) {
+  terms_df <- tdm_to_dataframe(term_doc_mat)
+  barplot(terms_df[1:nr_words,]$freq, las = 2, names.arg = terms_df[1:nr_words,]$word,
+          col ="blue", main ="Most common tokens",
+          ylab = "Frequency")
+}
+
+create_wordcloud <- function(term_doc_mat) {
+    df <- tdm_to_dataframe(term_doc_mat)
+    set.seed(1)
+    wordcloud(words = df$word, freq = df$freq, min.freq = min_freq,
+          max.words=max_wc_words, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(9, "Set1")) # Alternative: Dark2, but it only has 8 colors
+}
+
+display_top_x <- function(term_doc_mat, x) {
+  df <- tdm_to_dataframe(term_doc_mat)
+  head(df, x)
+}
+
+# Using RWeka Package, Alternatively, NLP Package may be used
+Custom_Tokenizer <- function(inp) {
+  NGramTokenizer(inp, Weka_control(min = ngram_min, max = ngram_max))
+}
+```
+
+# Analyze Amazon Reviews
+
+## Inspect sample reviews 
+```{r}
+text_df = data.frame(review = text) # remove_labels(text)) #, label = text_labels)
+head(text_df,15)
+```
+
+
+## Analyze Frequency of Single Words
+(One-Gram Term Document Matrix and Visualisation)
+
+```{r, message=F, warning=F}
+reviews <- prepare_reviews(text)
+
+tdm_no_ngram <- TermDocumentMatrix(reviews)
+tdm_no_ngram <- removeSparseTerms(tdm_no_ngram, sparsity)
+
+create_wordcloud(tdm_no_ngram)
+create_barplot(tdm_no_ngram, 30)
+
+```
+
+```{r}
+display_top_x(tdm_no_ngram, 150)
+```
+
+## Analyze Frequency of Groups of Words (N-Grams)
+(N-Gram Term Document Matrix and Visualisation)
+```{r, message=F, warning=F}
+# if (reduce_memory_usage) rm(tdm_no_ngram)
+
+tdm_ngrams <- TermDocumentMatrix(reviews, control = list(tokenize = Custom_Tokenizer))
+tdm_ngrams <- removeSparseTerms(tdm_ngrams, ngram_sparsity)
+
+
+create_wordcloud(tdm_ngrams)
+create_barplot(tdm_ngrams, 30)
+```
+
+
+```{r}
+display_top_x(tdm_ngrams, 150)
+```
+
+```{r}
+display_top_x(tdm_no_ngram, 150)
+```
+
+## Topic Modeling
+
+```{r}
+library(topicmodels)
+library("tsne")
+library(LDAvis)
+library(slam)
+
+# reminder: Reviews is a VCorpus, not a Corpus :-)
+
+# creating a new DTM instead of transposing a TDM, because the TDM had been reduced in sparsity quite heavily
+dtm <- DocumentTermMatrix(reviews, control = list(removePunctuation = T, tolower = T, stopwords = T, stemming = T)) # stemming = T
+
+# removing empty rows:
+rowsums <- apply(dtm , 1, sum) # checking which rows only have zeros
+dtm   <- dtm[rowsums> 0, ] # removing these
+
+review_topicmodel <- LDA(dtm, 60)
+
+# Terms <- terms(review_topicmodel, 10)
+# inspect(Terms)
+
+# using t-sne for intertopic distance, because it works better with our model
+tsne_svd <- function(x) tsne(svd(x)$u)
+
+get_ldavis_json <- function(custom_topicmodel, doc_term){
+
+  
+  theta <- as.matrix(posterior(custom_topicmodel)$topics)
+  phi <- as.matrix(posterior(custom_topicmodel)$terms)
+  
+  vocab <- colnames(phi)
+  term_frequency <- slam::col_sums(doc_term)
+  
+  # Convert to json
+  json_lda <- LDAvis::createJSON(theta = theta, phi = phi, vocab = vocab, mds.method = tsne_svd, doc.length = as.vector(table(doc_term$i)), term.frequency = term_frequency)
+  
+  return(json_lda)
+}
+
+
+ldavis_config <- get_ldavis_json(review_topicmodel, dtm)
+
+serVis(ldavis_config)
+```
+
+
+
+## Sentiment Analysis
+
+```{r}
+tdm <- tdm_no_ngram
+# tdm <- tdm_ngrams
+
+convert_tdm_for_training <- function(tdm) {
+  train <- as.matrix(tdm)
+  train <- t(train) # transpose tdm to dtm
+  train <- cbind(train, c(0, 1))
+  colnames(train)[ncol(train)] <- 'label'
+  train <- as.data.frame(train)
+  return(train)
+}
+
+prepared_data <-  convert_tdm_for_training(tdm)
+prepared_data$label <- text_labels
+
+train <- head(prepared_data, max_nr_Documents - test_nr_Documents)  
+test <- tail(prepared_data, test_nr_Documents)
+
+test_text <- tail(text, test_nr_Documents)
+
+# using caret library
+# fit <- train(label ~ ., data = train, method = 'bayesglm')
+
+# alternatively, "pure" r without caret (using a logistic regression):
+lr_fit <- glm(label ~ ., family=binomial(link='logit'), data = train)
+
+preds = predict(lr_fit, newdata = test)
+
+preds_int = as.integer(preds > 0)
+
+test_results <- data.frame(text = remove_labels(test_text), labels = test$label, prediction = preds_int)
+
+# View(test_results)
+
+confusionMatrix(factor(test_results$prediction), factor(test_results$labels))
+```
+
+
+For a Explanation of the results, please see the presentation.
